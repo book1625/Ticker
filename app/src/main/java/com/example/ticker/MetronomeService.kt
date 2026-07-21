@@ -13,6 +13,7 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import kotlin.math.PI
+import kotlin.math.exp
 import kotlin.math.sin
 
 class MetronomeService : Service() {
@@ -25,6 +26,7 @@ class MetronomeService : Service() {
         private const val NOTIFICATION_CHANNEL_ID = "metronome_channel"
         private const val NOTIFICATION_ID = 1
         private const val SAMPLE_RATE = 44100
+        private const val CHIME_INTERVAL_NANOS = 5L * 60_000_000_000L
     }
 
     @Volatile
@@ -32,6 +34,7 @@ class MetronomeService : Service() {
     private var beatThread: Thread? = null
     private var tiTrack: AudioTrack? = null
     private var taTrack: AudioTrack? = null
+    private var chimeTrack: AudioTrack? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -39,6 +42,7 @@ class MetronomeService : Service() {
         super.onCreate()
         tiTrack = createClickTrack(frequencyHz = 1500.0, durationMs = 120)
         taTrack = createClickTrack(frequencyHz = 900.0, durationMs = 120)
+        chimeTrack = createChimeTrack()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -58,6 +62,7 @@ class MetronomeService : Service() {
         beatThread?.interrupt()
         tiTrack?.release()
         taTrack?.release()
+        chimeTrack?.release()
         super.onDestroy()
     }
 
@@ -82,6 +87,7 @@ class MetronomeService : Service() {
         val durationNanos = durationMillis * 1_000_000L
         val startNanos = System.nanoTime()
         var beatIndex = 0L
+        var nextChimeNanos = CHIME_INTERVAL_NANOS
 
         try {
             while (isRunning && (System.nanoTime() - startNanos) < durationNanos) {
@@ -92,6 +98,10 @@ class MetronomeService : Service() {
                 }
                 if (!isRunning) break
                 playClick(if (beatIndex % 2 == 0L) tiTrack else taTrack)
+                if (System.nanoTime() - startNanos >= nextChimeNanos) {
+                    playClick(chimeTrack)
+                    nextChimeNanos += CHIME_INTERVAL_NANOS
+                }
                 beatIndex++
             }
         } catch (_: InterruptedException) {
@@ -127,7 +137,35 @@ class MetronomeService : Service() {
             }
             buffer[i] = (sin(2.0 * PI * frequencyHz * t) * envelope * Short.MAX_VALUE).toInt().toShort()
         }
+        return buildStaticTrack(buffer)
+    }
 
+    /**
+     * 合成每五分鐘倒數提醒用的高亮叮聲，音色與節拍點擊聲明顯區隔。
+     * 疊加基頻與泛音（3 倍頻）模擬鐘鈴的明亮音色，並以指數衰減取代點擊聲的短促收尾，
+     * 讓提醒聲帶有較長的鈴音尾韻，在節拍聲中更容易被辨識出來。
+     */
+    private fun createChimeTrack(): AudioTrack {
+        val durationMs = 500
+        val frequencyHz = 2000.0
+        val numSamples = SAMPLE_RATE * durationMs / 1000
+        val attackSamples = (SAMPLE_RATE * 0.005).toInt()
+        val buffer = ShortArray(numSamples)
+        for (i in 0 until numSamples) {
+            val t = i.toDouble() / SAMPLE_RATE
+            val decayT = (i - attackSamples).coerceAtLeast(0).toDouble() / SAMPLE_RATE
+            val envelope = if (i < attackSamples) {
+                i.toDouble() / attackSamples
+            } else {
+                exp(-6.0 * decayT)
+            }
+            val tone = sin(2.0 * PI * frequencyHz * t) * 0.7 + sin(2.0 * PI * frequencyHz * 3 * t) * 0.3
+            buffer[i] = (tone * envelope * Short.MAX_VALUE).toInt().toShort()
+        }
+        return buildStaticTrack(buffer)
+    }
+
+    private fun buildStaticTrack(buffer: ShortArray): AudioTrack {
         val track = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
