@@ -103,8 +103,8 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private val BPM_PRESETS = listOf(160, 180, 200, 210)
-private val MINUTE_PRESETS = listOf(15, 20, 25, 30)
+private val BPM_PRESETS = listOf(160, 180, 200, 210, 220)
+private val MINUTE_PRESETS = listOf(15, 20, 25, 30, 35, 40)
 
 private fun formatRemaining(millis: Long): String {
     val totalSeconds = (millis / 1000).coerceAtLeast(0)
