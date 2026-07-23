@@ -14,8 +14,10 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -179,7 +181,7 @@ fun MetronomeScreen(onStart: (Int, Long) -> Unit, onStop: () -> Unit) {
             Box(modifier = Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) {
                 DisplaySection(bpmText = bpmText, displayedMillis = displayedMillis)
             }
-            Box(modifier = Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) {
+            Box(modifier = Modifier.width(IntrinsicSize.Max).fillMaxHeight(), contentAlignment = Alignment.Center) {
                 SelectionSection(
                     bpmText = bpmText,
                     onBpmTextChange = { bpmText = it },
@@ -247,7 +249,7 @@ private fun DisplaySection(bpmText: String, displayedMillis: Long, modifier: Mod
     }
 }
 
-/** 選擇區：BPM 與倒數分鐘數的輸入欄位及快選項。 */
+/** 選擇區：BPM 與倒數分鐘數的輸入欄位及快選項；快選 chip 單列排列，空間不足時可橫向捲動。 */
 @Composable
 private fun SelectionSection(
     bpmText: String,
