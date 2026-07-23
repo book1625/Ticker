@@ -104,10 +104,19 @@ class MetronomeService : Service() {
                 }
                 beatIndex++
             }
+            if (isRunning) playEndChimes()
         } catch (_: InterruptedException) {
             // 由 stopMetronome() 中斷，正常結束
         } finally {
             stopSelf()
+        }
+    }
+
+    /** 倒計時自然結束時連播三次叮聲作為結束提示，間隔略長於叮聲長度，讓每聲鈴音尾韻收完再播下一聲。 */
+    private fun playEndChimes() {
+        repeat(3) {
+            playClick(chimeTrack)
+            Thread.sleep(600)
         }
     }
 
