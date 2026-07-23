@@ -10,6 +10,7 @@ import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -44,6 +45,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -124,6 +126,23 @@ fun MetronomeScreen(onStart: (Int, Long) -> Unit, onStop: () -> Unit) {
     var startElapsedRealtime by rememberSaveable { mutableStateOf(0L) }
     var totalDurationMillis by rememberSaveable { mutableStateOf(0L) }
     var remainingMillis by rememberSaveable { mutableStateOf(0L) }
+    var beatIndex by remember { mutableStateOf(-1L) }
+
+    LaunchedEffect(isRunning, startElapsedRealtime) {
+        if (!isRunning) {
+            beatIndex = -1
+            return@LaunchedEffect
+        }
+
+        val bpm = bpmText.toIntOrNull()?.coerceIn(30, 240) ?: 120
+        val intervalMillis = 60_000.0 / bpm
+        while (isRunning) {
+            val elapsed = SystemClock.elapsedRealtime() - startElapsedRealtime
+            beatIndex = (elapsed / intervalMillis).toLong()
+            val nextBeatMillis = ((beatIndex + 1) * intervalMillis).toLong()
+            delay((nextBeatMillis - elapsed).coerceAtLeast(1L))
+        }
+    }
 
     LaunchedEffect(isRunning, startElapsedRealtime) {
         while (isRunning) {
@@ -179,7 +198,7 @@ fun MetronomeScreen(onStart: (Int, Long) -> Unit, onStop: () -> Unit) {
     if (isLandscape) {
         Row(modifier = Modifier.fillMaxSize().padding(16.dp)) {
             Box(modifier = Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) {
-                DisplaySection(bpmText = bpmText, displayedMillis = displayedMillis)
+                DisplaySection(bpmText = bpmText, displayedMillis = displayedMillis, beatIndex = beatIndex)
             }
             Box(modifier = Modifier.width(IntrinsicSize.Max).fillMaxHeight(), contentAlignment = Alignment.Center) {
                 SelectionSection(
@@ -211,7 +230,7 @@ fun MetronomeScreen(onStart: (Int, Long) -> Unit, onStop: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            DisplaySection(bpmText = bpmText, displayedMillis = displayedMillis)
+            DisplaySection(bpmText = bpmText, displayedMillis = displayedMillis, beatIndex = beatIndex)
             Spacer(modifier = Modifier.height(32.dp))
             SelectionSection(
                 bpmText = bpmText,
@@ -232,14 +251,21 @@ fun MetronomeScreen(onStart: (Int, Long) -> Unit, onStop: () -> Unit) {
     }
 }
 
-/** 提示區：以大字體顯示目前 BPM 與倒計時剩餘時間。 */
+/**
+ * 提示區：以大字體顯示目前 BPM 與倒計時剩餘時間。
+ * BPM 數字左右兩側各有一個小綠點，播放時隨 ti（偶數拍，亮左點）、ta（奇數拍，亮右點）交替亮起，未播放時隱藏。
+ */
 @Composable
-private fun DisplaySection(bpmText: String, displayedMillis: Long, modifier: Modifier = Modifier) {
+private fun DisplaySection(bpmText: String, displayedMillis: Long, beatIndex: Long, modifier: Modifier = Modifier) {
     Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            text = bpmText.ifEmpty { "0" },
-            style = MaterialTheme.typography.displayLarge.copy(fontSize = 80.sp, fontWeight = FontWeight.Bold)
-        )
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+            BeatDot(active = beatIndex >= 0 && beatIndex % 2 == 0L)
+            Text(
+                text = bpmText.ifEmpty { "0" },
+                style = MaterialTheme.typography.displayLarge.copy(fontSize = 80.sp, fontWeight = FontWeight.Bold)
+            )
+            BeatDot(active = beatIndex >= 0 && beatIndex % 2 == 1L)
+        }
         Text(text = "BPM", style = MaterialTheme.typography.labelLarge)
         Spacer(modifier = Modifier.height(16.dp))
         Text(
@@ -247,6 +273,16 @@ private fun DisplaySection(bpmText: String, displayedMillis: Long, modifier: Mod
             style = MaterialTheme.typography.displayLarge.copy(fontSize = 64.sp, fontWeight = FontWeight.Bold)
         )
     }
+}
+
+/** 拍點指示燈：亮起時為綠色圓點，熄滅時保留佔位避免版面跳動。 */
+@Composable
+private fun BeatDot(active: Boolean) {
+    Box(
+        modifier = Modifier
+            .size(14.dp)
+            .background(if (active) Color(0xFF4CAF50) else Color.Transparent, CircleShape)
+    )
 }
 
 /** 選擇區：BPM 與倒數分鐘數的輸入欄位及快選項；快選 chip 單列排列，空間不足時可橫向捲動。 */
