@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Ticker 節拍計時器</title>
+<style>
+  :root {
+    --bg: #121212;
+    --surface: #1e1e1e;
+    --primary: #bb86fc;
+    --on-primary: #000;
+    --secondary: #333;
+    --on-secondary: #e0e0e0;
+    --text: #e6e6e6;
+    --muted: #9e9e9e;
+    --dot: #4caf50;
+  }
+
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", "Microsoft JhengHei", system-ui, sans-serif;
+    overscroll-behavior: none;
+  }
+
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 32px;
+    padding: 24px;
+    min-height: 100%;
+  }
+
+  /* 顯示區 */
+  .display { text-align: center; }
+
+  .bpm-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+  }
+
+  .dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: transparent;
+    transition: background 60ms;
+  }
+  .dot.active { background: var(--dot); }
+
+  .bpm-number {
+    font-size: 80px;
+    font-weight: 700;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .bpm-label {
+    font-size: 13px;
+    letter-spacing: 2px;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+
+  .time-number {
+    font-size: 64px;
+    font-weight: 700;
+    margin-top: 16px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* 選擇區 */
+  .selection {
+    width: 100%;
+    max-width: 420px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .field label {
+    display: block;
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+
+  .field input {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid #444;
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 20px;
+    padding: 12px 14px;
+    outline: none;
+  }
+  .field input:focus { border-color: var(--primary); }
+  .field input:disabled { opacity: 0.5; }
+
+  .chips {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    scrollbar-width: thin;
+  }
+
+  .chip {
+    flex: 0 0 auto;
+    background: var(--surface);
+    border: 1px solid #444;
+    border-radius: 999px;
+    color: var(--on-secondary);
+    font-size: 15px;
+    padding: 8px 16px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .chip.selected {
+    background: var(--primary);
+    border-color: var(--primary);
+    color: var(--on-primary);
+  }
+  .chip:disabled { opacity: 0.5; cursor: default; }
+
+  /* 按鍵區 */
+  .buttons {
+    display: flex;
+    gap: 24px;
+    width: 100%;
+    max-width: 420px;
+    justify-content: center;
+  }
+
+  .btn {
+    width: 96px;
+    height: 96px;
+    border-radius: 50%;
+    border: none;
+    font-size: 20px;
+    font-weight: 600;
+    cursor: pointer;
+    color: var(--on-primary);
+    background: var(--primary);
+  }
+  .btn.reset {
+    background: var(--secondary);
+    color: var(--on-secondary);
+  }
+  .btn:active { transform: scale(0.96); }
+
+  /* 橫向排版 */
+  @media (orientation: landscape) and (max-height: 520px) {
+    body { flex-direction: row; gap: 40px; }
+    .selection { max-width: 300px; }
+    .buttons { flex-direction: column; width: auto; }
+    .bpm-number { font-size: 64px; }
+    .time-number { font-size: 52px; }
+  }
+</style>
+</head>
+<body>
+  <div class="display">
+    <div class="bpm-row">
+      <div class="dot" id="dotLeft"></div>
+      <div class="bpm-number" id="bpmDisplay">120</div>
+      <div class="dot" id="dotRight"></div>
+    </div>
+    <div class="bpm-label">BPM</div>
+    <div class="time-number" id="timeDisplay">15:00</div>
+  </div>
+
+  <div class="selection">
+    <div class="field">
+      <label for="bpmInput">節拍 (BPM)</label>
+      <input id="bpmInput" type="text" inputmode="numeric" value="120" maxlength="3">
+      <div class="chips" id="bpmChips"></div>
+    </div>
+    <div class="field">
+      <label for="minInput">倒數分鐘數</label>
+      <input id="minInput" type="text" inputmode="numeric" value="15" maxlength="3">
+      <div class="chips" id="minChips"></div>
+    </div>
+  </div>
+
+  <div class="buttons">
+    <button class="btn reset" id="resetBtn">重置</button>
+    <button class="btn" id="toggleBtn">開始</button>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+
+  const BPM_PRESETS = [160, 180, 200, 210, 220];
+  const MIN_PRESETS = [15, 20, 25, 30, 35, 40];
+  const CHIME_INTERVAL_MS = 5 * 60 * 1000;
+
+  const bpmInput = document.getElementById("bpmInput");
+  const minInput = document.getElementById("minInput");
+  const bpmDisplay = document.getElementById("bpmDisplay");
+  const timeDisplay = document.getElementById("timeDisplay");
+  const dotLeft = document.getElementById("dotLeft");
+  const dotRight = document.getElementById("dotRight");
+  const toggleBtn = document.getElementById("toggleBtn");
+  const resetBtn = document.getElementById("resetBtn");
+
+  // ---- 狀態 ----
+  let audioCtx = null;
+  let isRunning = false;
+  let isPaused = false;
+  let bpm = 120;
+  let totalDurationMs = 15 * 60 * 1000;
+  let remainingMs = totalDurationMs;
+
+  // 排程用（皆以 AudioContext 時間為基準，避免長時間漂移）
+  let schedulerTimer = null;
+  let uiTimer = null;
+  let nextBeatTime = 0;      // 下一拍的 audio 時間（秒）
+  let beatIndex = 0;         // 累計拍數，偶數 ti、奇數 ta
+  let startAudioTime = 0;    // 本段起始 audio 時間（秒）
+  let nextChimeMs = CHIME_INTERVAL_MS;
+
+  const LOOKAHEAD_MS = 25;   // 排程輪詢間隔
+  const SCHEDULE_AHEAD = 0.1; // 預先排程秒數
+
+  // ---- 聲音合成 ----
+  function ensureCtx() {
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (audioCtx.state === "suspended") audioCtx.resume();
+  }
+
+  // 點擊聲：快速起音、滿振幅維持、短促收尾，聽感較大聲
+  function playClick(freq, atTime) {
+    const dur = 0.12, attack = 0.005, release = 0.02;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = freq;
+    const g = gain.gain;
+    g.setValueAtTime(0, atTime);
+    g.linearRampToValueAtTime(1, atTime + attack);
+    g.setValueAtTime(1, atTime + dur - release);
+    g.linearRampToValueAtTime(0, atTime + dur);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(atTime);
+    osc.stop(atTime + dur);
+  }
+
+  // 叮聲：基頻加 3 倍泛音、指數衰減長尾韻，與拍點聲區隔
+  function playChime(atTime) {
+    const dur = 0.5, attack = 0.005, base = 2000;
+    const gain = audioCtx.createGain();
+    const g = gain.gain;
+    g.setValueAtTime(0, atTime);
+    g.linearRampToValueAtTime(1, atTime + attack);
+    g.exponentialRampToValueAtTime(0.0001, atTime + dur);
+    gain.connect(audioCtx.destination);
+    [[base, 0.7], [base * 3, 0.3]].forEach(function (pair) {
+      const osc = audioCtx.createOscillator();
+      const og = audioCtx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = pair[0];
+      og.gain.value = pair[1];
+      osc.connect(og).connect(gain);
+      osc.start(atTime);
+      osc.stop(atTime + dur);
+    });
+  }
+
+  // ---- 排程迴圈 ----
+  function scheduler() {
+    const interval = 60 / bpm; // 每拍秒數
+    while (nextBeatTime < audioCtx.currentTime + SCHEDULE_AHEAD) {
+      const isTi = beatIndex % 2 === 0;
+      playClick(isTi ? 1500 : 900, nextBeatTime);
+      scheduleDotFlash(nextBeatTime, isTi);
+
+      // 5 分鐘 chime
+      const elapsedMs = (nextBeatTime - startAudioTime) * 1000;
+      if (elapsedMs >= nextChimeMs) {
+        playChime(nextBeatTime);
+        nextChimeMs += CHIME_INTERVAL_MS;
+      }
+
+      beatIndex++;
+      nextBeatTime += interval;
+    }
+  }
+
+  // 指示燈依 audio 時間對齊亮起
+  function scheduleDotFlash(atTime, isTi) {
+    const delayMs = Math.max(0, (atTime - audioCtx.currentTime) * 1000);
+    setTimeout(function () {
+      const dot = isTi ? dotLeft : dotRight;
+      const other = isTi ? dotRight : dotLeft;
+      dot.classList.add("active");
+      other.classList.remove("active");
+      setTimeout(function () { dot.classList.remove("active"); }, 120);
+    }, delayMs);
+  }
+
+  // ---- 倒計時 UI ----
+  function tickUi() {
+    const elapsedMs = (audioCtx.currentTime - startAudioTime) * 1000;
+    const remaining = totalDurationMs - elapsedMs;
+    if (remaining <= 0) {
+      remainingMs = 0;
+      updateTimeDisplay(0);
+      finish();
+      return;
+    }
+    remainingMs = remaining;
+    updateTimeDisplay(remaining);
+  }
+
+  function finish() {
+    stopScheduling();
+    isRunning = false;
+    isPaused = false;
+    playEndChimes();
+    setFieldsEnabled(true);
+    toggleBtn.textContent = "開始";
+    remainingMs = totalDurationMs;
+    setTimeout(function () { if (!isRunning) updateTimeDisplay(totalDurationMs); }, 2200);
+  }
+
+  // 結束連播三聲叮，間隔略長於叮聲長度
+  function playEndChimes() {
+    let t = audioCtx.currentTime + 0.05;
+    for (let i = 0; i < 3; i++) {
+      playChime(t);
+      t += 0.6;
+    }
+  }
+
+  // ---- 顯示 ----
+  function updateTimeDisplay(ms) {
+    const totalSec = Math.max(0, Math.ceil(ms / 1000));
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    timeDisplay.textContent =
+      String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+  }
+
+  function clearDots() {
+    dotLeft.classList.remove("active");
+    dotRight.classList.remove("active");
+  }
+
+  // ---- 控制 ----
+  function start() {
+    ensureCtx();
+    bpm = clamp(parseInt(bpmInput.value, 10) || 120, 30, 240);
+    bpmDisplay.textContent = bpm;
+
+    if (isPaused) {
+      totalDurationMs = remainingMs;
+    } else {
+      const mins = clamp(parseInt(minInput.value, 10) || 15, 1, 180);
+      totalDurationMs = mins * 60 * 1000;
+    }
+
+    startAudioTime = audioCtx.currentTime + 0.1;
+    nextBeatTime = startAudioTime;
+    beatIndex = 0;
+    nextChimeMs = CHIME_INTERVAL_MS;
+
+    isRunning = true;
+    isPaused = false;
+    setFieldsEnabled(false);
+    toggleBtn.textContent = "暫停";
+
+    schedulerTimer = setInterval(scheduler, LOOKAHEAD_MS);
+    uiTimer = setInterval(tickUi, 200);
+    scheduler();
+  }
+
+  function pause() {
+    // 記錄剩餘時間，下次自暫停點續跑
+    const elapsedMs = (audioCtx.currentTime - startAudioTime) * 1000;
+    remainingMs = Math.max(0, totalDurationMs - elapsedMs);
+    stopScheduling();
+    isRunning = false;
+    isPaused = true;
+    setFieldsEnabled(false);
+    toggleBtn.textContent = "開始";
+    updateTimeDisplay(remainingMs);
+  }
+
+  function reset() {
+    stopScheduling();
+    isRunning = false;
+    isPaused = false;
+    const mins = clamp(parseInt(minInput.value, 10) || 15, 1, 180);
+    totalDurationMs = mins * 60 * 1000;
+    remainingMs = totalDurationMs;
+    setFieldsEnabled(true);
+    toggleBtn.textContent = "開始";
+    updateTimeDisplay(totalDurationMs);
+  }
+
+  function stopScheduling() {
+    if (schedulerTimer) { clearInterval(schedulerTimer); schedulerTimer = null; }
+    if (uiTimer) { clearInterval(uiTimer); uiTimer = null; }
+    clearDots();
+  }
+
+  function setFieldsEnabled(enabled) {
+    bpmInput.disabled = !enabled;
+    minInput.disabled = !enabled;
+    document.querySelectorAll(".chip").forEach(function (c) { c.disabled = !enabled; });
+  }
+
+  function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
+
+  // ---- 事件 ----
+  toggleBtn.addEventListener("click", function () {
+    if (isRunning) pause(); else start();
+  });
+  resetBtn.addEventListener("click", reset);
+
+  bpmInput.addEventListener("input", function () {
+    bpmInput.value = bpmInput.value.replace(/\D/g, "").slice(0, 3);
+    if (!isRunning && !isPaused) {
+      bpmDisplay.textContent = bpmInput.value || "0";
+      syncChips();
+    }
+  });
+
+  minInput.addEventListener("input", function () {
+    minInput.value = minInput.value.replace(/\D/g, "").slice(0, 3);
+    if (!isRunning && !isPaused) {
+      const mins = parseInt(minInput.value, 10) || 0;
+      updateTimeDisplay(mins * 60 * 1000);
+      syncChips();
+    }
+  });
+
+  // ---- 快選 chips ----
+  function buildChips(container, presets, input, onPick) {
+    presets.forEach(function (p) {
+      const el = document.createElement("button");
+      el.className = "chip";
+      el.textContent = p;
+      el.dataset.value = p;
+      el.addEventListener("click", function () {
+        if (input.disabled) return;
+        input.value = p;
+        onPick();
+        syncChips();
+      });
+      container.appendChild(el);
+    });
+  }
+
+  function syncChips() {
+    document.querySelectorAll("#bpmChips .chip").forEach(function (c) {
+      c.classList.toggle("selected", c.dataset.value === bpmInput.value);
+    });
+    document.querySelectorAll("#minChips .chip").forEach(function (c) {
+      c.classList.toggle("selected", c.dataset.value === minInput.value);
+    });
+  }
+
+  buildChips(document.getElementById("bpmChips"), BPM_PRESETS, bpmInput, function () {
+    bpmDisplay.textContent = bpmInput.value || "0";
+  });
+  buildChips(document.getElementById("minChips"), MIN_PRESETS, minInput, function () {
+    const mins = parseInt(minInput.value, 10) || 0;
+    updateTimeDisplay(mins * 60 * 1000);
+  });
+
+  // ---- 初始 ----
+  updateTimeDisplay(totalDurationMs);
+  syncChips();
+})();
+</script>
+</body>
+</html>
