@@ -107,6 +107,14 @@
   .field input:focus { border-color: var(--primary); }
   .field input:disabled { opacity: 0.5; }
 
+  .field input[type="range"] {
+    background: transparent;
+    border: none;
+    padding: 0;
+    accent-color: var(--primary);
+    cursor: pointer;
+  }
+
   .chips {
     display: flex;
     gap: 8px;
@@ -192,6 +200,10 @@
       <input id="minInput" type="text" inputmode="numeric" value="15" maxlength="3">
       <div class="chips" id="minChips"></div>
     </div>
+    <div class="field">
+      <label for="volInput">音量 <span id="volValue">100%</span></label>
+      <input id="volInput" type="range" min="0" max="100" value="100">
+    </div>
   </div>
 
   <div class="buttons">
@@ -219,9 +231,14 @@
   const dotRight = document.getElementById("dotRight");
   const toggleBtn = document.getElementById("toggleBtn");
   const resetBtn = document.getElementById("resetBtn");
+  const volInput = document.getElementById("volInput");
+  const volValue = document.getElementById("volValue");
 
   // ---- 狀態 ----
   let audioCtx = null;
+  let masterGain = null;
+  let volume = 1;
+  let wakeLock = null;
   let isRunning = false;
   let isPaused = false;
   let bpm = 120;
@@ -245,6 +262,9 @@
   function ensureCtx() {
     if (!audioCtx) {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      masterGain = audioCtx.createGain();
+      masterGain.gain.value = volume;
+      masterGain.connect(audioCtx.destination);
     }
     if (audioCtx.state === "suspended") audioCtx.resume();
 
@@ -253,32 +273,60 @@
     if (p) p.catch(function () {});
   }
 
-  // 點擊聲：快速起音、滿振幅維持、短促收尾，聽感較大聲
+  // 木魚敲擊聲：起音音高快速下滑到基頻 + 極快衰減，加不諧和高泛音與極短高頻觸點，形成中空的「喀」
   function playClick(freq, atTime) {
-    const dur = 0.12, attack = 0.005, release = 0.02;
+    // 起音觸點：極短高通噪音，給敲擊的「喀」瞬態
+    const tickDur = 0.006;
+    const frames = Math.floor(audioCtx.sampleRate * tickDur);
+    const buf = audioCtx.createBuffer(1, frames, audioCtx.sampleRate);
+    const ch = buf.getChannelData(0);
+    for (let i = 0; i < frames; i++) ch[i] = Math.random() * 2 - 1;
+    const tick = audioCtx.createBufferSource();
+    tick.buffer = buf;
+    const hp = audioCtx.createBiquadFilter();
+    hp.type = "highpass";
+    hp.frequency.value = 2200;
+    const tGain = audioCtx.createGain();
+    tGain.gain.setValueAtTime(0.15, atTime);
+    tGain.gain.exponentialRampToValueAtTime(0.0001, atTime + tickDur);
+    tick.connect(hp).connect(tGain).connect(masterGain);
+    tick.start(atTime);
+    tick.stop(atTime + tickDur);
+
+    // 主體：音高由高快速滑回基頻，極快指數衰減，形成木魚中空敲擊
+    const bodyDur = 0.05;
     const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-    osc.type = "sine";
-    osc.frequency.value = freq;
-    const g = gain.gain;
-    g.setValueAtTime(0, atTime);
-    g.linearRampToValueAtTime(1, atTime + attack);
-    g.setValueAtTime(1, atTime + dur - release);
-    g.linearRampToValueAtTime(0, atTime + dur);
-    osc.connect(gain).connect(audioCtx.destination);
+    const oGain = audioCtx.createGain();
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(freq * 1.6, atTime);
+    osc.frequency.exponentialRampToValueAtTime(freq, atTime + 0.01);
+    oGain.gain.setValueAtTime(0.9, atTime);
+    oGain.gain.exponentialRampToValueAtTime(0.0001, atTime + bodyDur);
+    osc.connect(oGain).connect(masterGain);
     osc.start(atTime);
-    osc.stop(atTime + dur);
+    osc.stop(atTime + bodyDur);
+
+    // 不諧和高泛音：更快衰減，增添木魚的中空音色
+    const osc2 = audioCtx.createOscillator();
+    const o2Gain = audioCtx.createGain();
+    osc2.type = "sine";
+    osc2.frequency.value = freq * 2.6;
+    o2Gain.gain.setValueAtTime(0.14, atTime);
+    o2Gain.gain.exponentialRampToValueAtTime(0.0001, atTime + 0.025);
+    osc2.connect(o2Gain).connect(masterGain);
+    osc2.start(atTime);
+    osc2.stop(atTime + 0.025);
   }
 
   // 叮聲：基頻加 3 倍泛音、指數衰減長尾韻，與拍點聲區隔
   function playChime(atTime) {
-    const dur = 0.5, attack = 0.005, base = 2000;
+    const dur = 1.5, attack = 0.005, base = 2000;
     const gain = audioCtx.createGain();
     const g = gain.gain;
     g.setValueAtTime(0, atTime);
     g.linearRampToValueAtTime(1, atTime + attack);
     g.exponentialRampToValueAtTime(0.0001, atTime + dur);
-    gain.connect(audioCtx.destination);
+    gain.connect(masterGain);
     [[base, 0.7], [base * 3, 0.3]].forEach(function (pair) {
       const osc = audioCtx.createOscillator();
       const og = audioCtx.createGain();
@@ -296,15 +344,16 @@
     const interval = 60 / bpm; // 每拍秒數
     while (nextBeatTime < audioCtx.currentTime + SCHEDULE_AHEAD) {
       const isTi = beatIndex % 2 === 0;
-      playClick(isTi ? 1500 : 900, nextBeatTime);
-      scheduleDotFlash(nextBeatTime, isTi);
 
-      // 5 分鐘 chime
+      // 到達間隔時間的那一拍，改以長音叮聲取代 ti-ta 拍點聲
       const elapsedMs = (nextBeatTime - startAudioTime) * 1000;
       if (elapsedMs >= nextChimeMs) {
         playChime(nextBeatTime);
         nextChimeMs += CHIME_INTERVAL_MS;
+      } else {
+        playClick(isTi ? 1500 : 900, nextBeatTime);
       }
+      scheduleDotFlash(nextBeatTime, isTi);
 
       beatIndex++;
       nextBeatTime += interval;
@@ -393,6 +442,7 @@
     isPaused = false;
     setFieldsEnabled(false);
     toggleBtn.textContent = "暫停";
+    requestWakeLock();
 
     schedulerTimer = setInterval(scheduler, LOOKAHEAD_MS);
     uiTimer = setInterval(tickUi, 200);
@@ -426,7 +476,23 @@
   function stopScheduling() {
     if (schedulerTimer) { clearInterval(schedulerTimer); schedulerTimer = null; }
     if (uiTimer) { clearInterval(uiTimer); uiTimer = null; }
+    releaseWakeLock();
     clearDots();
+  }
+
+  // 螢幕 Wake Lock：計時期間保持螢幕常亮，避免自動休眠導致計時器凍結、聲音中斷
+  function requestWakeLock() {
+    if (!("wakeLock" in navigator)) return;
+    navigator.wakeLock.request("screen").then(function (lock) {
+      wakeLock = lock;
+    }).catch(function () {});
+  }
+
+  function releaseWakeLock() {
+    if (wakeLock) {
+      wakeLock.release().catch(function () {});
+      wakeLock = null;
+    }
   }
 
   function setFieldsEnabled(enabled) {
@@ -437,11 +503,60 @@
 
   function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
 
+  // ---- 設定記憶（localStorage）----
+  const STORAGE_KEY = "tickerSettings";
+
+  function saveSettings() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        bpm: bpmInput.value,
+        min: minInput.value,
+        volume: volInput.value
+      }));
+    } catch (e) {}
+  }
+
+  function loadSettings() {
+    let s = null;
+    try { s = JSON.parse(localStorage.getItem(STORAGE_KEY)); } catch (e) {}
+    if (!s) return;
+    if (s.bpm) {
+      bpmInput.value = s.bpm;
+      bpmDisplay.textContent = s.bpm;
+    }
+    if (s.min) {
+      minInput.value = s.min;
+      totalDurationMs = clamp(parseInt(s.min, 10) || 15, 1, 180) * 60 * 1000;
+      remainingMs = totalDurationMs;
+    }
+    if (s.volume != null && s.volume !== "") {
+      volInput.value = s.volume;
+      volume = clamp(parseInt(s.volume, 10) || 0, 0, 100) / 100;
+      volValue.textContent = Math.round(volume * 100) + "%";
+    }
+  }
+
   // ---- 事件 ----
   toggleBtn.addEventListener("click", function () {
     if (isRunning) pause(); else start();
   });
   resetBtn.addEventListener("click", reset);
+
+  // 音量：直接調整 master gain，播放中也即時生效
+  volInput.addEventListener("input", function () {
+    volume = clamp(parseInt(volInput.value, 10) || 0, 0, 100) / 100;
+    volValue.textContent = Math.round(volume * 100) + "%";
+    if (masterGain) masterGain.gain.value = volume;
+    saveSettings();
+  });
+
+  // 頁面隱藏時系統會自動釋放 Wake Lock，切回可見且仍在計時則重新取得，並喚醒可能被掛起的音訊
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible" && isRunning) {
+      requestWakeLock();
+      if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
+    }
+  });
 
   bpmInput.addEventListener("input", function () {
     bpmInput.value = bpmInput.value.replace(/\D/g, "").slice(0, 3);
@@ -449,6 +564,7 @@
       bpmDisplay.textContent = bpmInput.value || "0";
       syncChips();
     }
+    saveSettings();
   });
 
   minInput.addEventListener("input", function () {
@@ -458,6 +574,7 @@
       updateTimeDisplay(mins * 60 * 1000);
       syncChips();
     }
+    saveSettings();
   });
 
   // ---- 快選 chips ----
@@ -472,6 +589,7 @@
         input.value = p;
         onPick();
         syncChips();
+        saveSettings();
       });
       container.appendChild(el);
     });
@@ -495,6 +613,7 @@
   });
 
   // ---- 初始 ----
+  loadSettings();
   updateTimeDisplay(totalDurationMs);
   syncChips();
 })();

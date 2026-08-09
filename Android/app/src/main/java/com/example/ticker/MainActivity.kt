@@ -1,6 +1,7 @@
 ﻿package com.example.ticker
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
@@ -33,6 +34,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
@@ -47,10 +49,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
@@ -70,20 +74,22 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     MetronomeScreen(
-                        onStart = { bpm, durationMillis -> startMetronome(bpm, durationMillis) },
-                        onStop = { stopMetronome() }
+                        onStart = { bpm, durationMillis, volume -> startMetronome(bpm, durationMillis, volume) },
+                        onStop = { stopMetronome() },
+                        onSetVolume = { volume -> setLiveVolume(volume) }
                     )
                 }
             }
         }
     }
 
-    private fun startMetronome(bpm: Int, durationMillis: Long) {
+    private fun startMetronome(bpm: Int, durationMillis: Long, volume: Float) {
         val launch = {
             val intent = Intent(this, MetronomeService::class.java).apply {
                 action = MetronomeService.ACTION_START
                 putExtra(MetronomeService.EXTRA_BPM, bpm)
                 putExtra(MetronomeService.EXTRA_DURATION_MILLIS, durationMillis)
+                putExtra(MetronomeService.EXTRA_VOLUME, volume)
             }
             ContextCompat.startForegroundService(this, intent)
         }
@@ -105,6 +111,14 @@ class MainActivity : ComponentActivity() {
         }
         startService(intent)
     }
+
+    private fun setLiveVolume(volume: Float) {
+        val intent = Intent(this, MetronomeService::class.java).apply {
+            action = MetronomeService.ACTION_SET_VOLUME
+            putExtra(MetronomeService.EXTRA_VOLUME, volume)
+        }
+        startService(intent)
+    }
 }
 
 private val BPM_PRESETS = listOf(160, 180, 200, 210, 220)
@@ -118,9 +132,12 @@ private fun formatRemaining(millis: Long): String {
 }
 
 @Composable
-fun MetronomeScreen(onStart: (Int, Long) -> Unit, onStop: () -> Unit) {
-    var bpmText by rememberSaveable { mutableStateOf("120") }
-    var minutesText by rememberSaveable { mutableStateOf("15") }
+fun MetronomeScreen(onStart: (Int, Long, Float) -> Unit, onStop: () -> Unit, onSetVolume: (Float) -> Unit) {
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("ticker_settings", Context.MODE_PRIVATE) }
+    var bpmText by rememberSaveable { mutableStateOf(prefs.getString("bpm", "120") ?: "120") }
+    var minutesText by rememberSaveable { mutableStateOf(prefs.getString("min", "15") ?: "15") }
+    var volume by rememberSaveable { mutableStateOf(prefs.getFloat("volume", 1f)) }
     var isRunning by rememberSaveable { mutableStateOf(false) }
     var isPaused by rememberSaveable { mutableStateOf(false) }
     var startElapsedRealtime by rememberSaveable { mutableStateOf(0L) }
@@ -187,10 +204,24 @@ fun MetronomeScreen(onStart: (Int, Long) -> Unit, onStop: () -> Unit) {
             }
             totalDurationMillis = durationMillis
             startElapsedRealtime = SystemClock.elapsedRealtime()
-            onStart(bpm, durationMillis)
+            onStart(bpm, durationMillis, volume)
             isRunning = true
             isPaused = false
         }
+    }
+
+    val onBpmChange: (String) -> Unit = {
+        bpmText = it
+        prefs.edit().putString("bpm", it).apply()
+    }
+    val onMinutesChange: (String) -> Unit = {
+        minutesText = it
+        prefs.edit().putString("min", it).apply()
+    }
+    val onVolumeChange: (Float) -> Unit = { v ->
+        volume = v
+        prefs.edit().putFloat("volume", v).apply()
+        if (isRunning) onSetVolume(v)
     }
 
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
@@ -203,10 +234,12 @@ fun MetronomeScreen(onStart: (Int, Long) -> Unit, onStop: () -> Unit) {
             Box(modifier = Modifier.width(IntrinsicSize.Max).fillMaxHeight(), contentAlignment = Alignment.Center) {
                 SelectionSection(
                     bpmText = bpmText,
-                    onBpmTextChange = { bpmText = it },
+                    onBpmTextChange = onBpmChange,
                     minutesText = minutesText,
-                    onMinutesTextChange = { minutesText = it },
+                    onMinutesTextChange = onMinutesChange,
                     fieldsEnabled = fieldsEnabled,
+                    volume = volume,
+                    onVolumeChange = onVolumeChange,
                     modifier = Modifier
                         .fillMaxWidth()
                         .verticalScroll(rememberScrollState())
@@ -234,10 +267,12 @@ fun MetronomeScreen(onStart: (Int, Long) -> Unit, onStop: () -> Unit) {
             Spacer(modifier = Modifier.height(32.dp))
             SelectionSection(
                 bpmText = bpmText,
-                onBpmTextChange = { bpmText = it },
+                onBpmTextChange = onBpmChange,
                 minutesText = minutesText,
-                onMinutesTextChange = { minutesText = it },
+                onMinutesTextChange = onMinutesChange,
                 fieldsEnabled = fieldsEnabled,
+                volume = volume,
+                onVolumeChange = onVolumeChange,
                 modifier = Modifier.fillMaxWidth()
             )
             Spacer(modifier = Modifier.height(32.dp))
@@ -293,6 +328,8 @@ private fun SelectionSection(
     minutesText: String,
     onMinutesTextChange: (String) -> Unit,
     fieldsEnabled: Boolean,
+    volume: Float,
+    onVolumeChange: (Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(modifier = modifier) {
@@ -344,6 +381,17 @@ private fun SelectionSection(
                 )
             }
         }
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Text(
+            text = "音量  ${(volume * 100).roundToInt()}%",
+            style = MaterialTheme.typography.labelLarge
+        )
+        Slider(
+            value = volume,
+            onValueChange = onVolumeChange,
+            valueRange = 0f..1f
+        )
     }
 }
 
